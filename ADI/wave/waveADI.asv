@@ -1,0 +1,176 @@
+clear; clf; fontSize = 15;
+
+%%% Solving the 2D heat equation
+%%% Solve u_t = kappa*(u_xx + u_yy) + f(x,y,t)
+%%% using BE-CD2 scheme
+
+kappa = 0.05; % diffusion coefficient
+tFinal = .5;
+c = 1;
+ax = 0; bx = 1;
+ay = 0; by = 1;
+kx = 3*pi;
+ky = 2*pi;
+plotOption = 1;
+ms = 'true';
+numResolutions = 4;
+
+%% Define a solution for testing
+if(strcmp(ms,'true'))
+    ue = @(x,y,t) sin(kx*x).*sin(ky*y).*exp(-c*(sqrt(kx^2+ky^2))*t);
+
+    ut = @(x,y,t) -c*sqrt(kx^2+ky^2)*sin(kx*x).*sin(ky*y).*exp(-c*(sqrt(kx^2 + ky^2))*t);
+    utt = @(x,y,t) c^2*(kx^2+ky^2)*sin(kx*x).*sin(ky*y).*exp(-c*(sqrt(kx^2 + ky^2))*t);
+    uxx = @(x,y,t) -kx^2.*sin(kx*x).*sin(ky*y).*exp(-c*(sqrt(kx^2+ky^2))*t);
+    uyy = @(x,y,t) -ky^2.*sin(kx*x).*sin(ky*y).*exp(-c*(sqrt(kx^2+ky^2))*t);
+
+    f  = @(x,y,t) utt(x,y,t) - c^2*(uxx(x,y,t) +uyy(x,y,t));
+
+    gax = @(y,t) ue(ax,y,t);
+    gbx = @(y,t) ue(bx,y,t);
+    gay = @(x,t) ue(x,ay,t);
+    gby = @(x,t) ue(x,by,t);
+
+    u0 = @(x,y) ue(x,y,0);
+    u1 = @(x,y) ut(x,y,0);
+
+elseif(strcmp(ms,'poly'))
+    c2 = 0;
+    ue  = @(x,y,t) (x.^2 + x + 1).*(y.^2 + y + 1).*(c2*t^2 + t + 1);
+    ut  = @(x,y,t) (x.^2 + x + 1).*(y.^2 + y + 1).*(2*c2*t + 1);
+    uxx = @(x,y,t) 2*(y.^2 + y + 1).*(c2*t^2 + t + 1);
+    uyy = @(x,y,t) 2*(x.^2 + x + 1).*(c2*t^2 + t + 1);
+    u0  = @(x,y) ue(x,y,0);
+    f   = @(x,y,t) ut(x,y,t) - kappa*(uxx(x,y,t) + uyy(x,y,t));
+    gax = @(y,t) ue(ax,y,t);
+    gbx = @(y,t) ue(bx,y,t);
+    gay = @(x,t) ue(x,ay,t);
+    gby = @(x,t) ue(x,by,t);
+else
+    fprintf('incorrect input for ms\n');
+end
+
+%% Grid refinement study
+err = zeros(numResolutions,1);
+
+for m = 1:numResolutions
+    Nx = 10*(2^m);
+    Ny = Nx;
+    dx = (bx-ax)/Nx;
+    dy = (by-ay)/Ny;
+
+    iax = 1; ibx = iax + Nx;
+    iay = 1; iby = iay + Ny;
+    i1x=iax+1; i1y=iay+1; % first interior pt in x and y
+    i2x=ibx-1; i2y=iby-1;
+
+    Ngx = ibx; Ngy  = iby; % total number of grid points in x and y
+   % Ngx1 = Ngx - 2; Ngy1 = Ngy - 2;
+
+    I1 = i1x:i2x; I2 = i1y:i2y; 
+    J1 = iax:ibx; J2 = iay:iby;
+
+    x = zeros(Ngx,Ngy); y = x;
+
+    for i = 1:Ngx
+        for j = 1:Ngy
+            x(i,j) = ax + (i - iax)*dx;
+            y(i,j) = ay + (j - iay)*dy;
+        end
+    end
+
+    % set the time-step
+    dt = dx;
+    Nt = round(tFinal/dt);
+    dt = tFinal/Nt;
+
+    % form the lhs matrix 
+    A = sparse(Ngx,Ngx);
+
+    rx = dt^2*c^2/(dx^2);
+    ry = dt^2*c^2/(dy^2);
+
+    for i = i1x:i2x 
+        A(i,i-1) = 1;
+        A(i,i  ) = -2;
+        A(i,i+1) = 1;
+    end
+    
+    Mx = sparse(Ngx, Ngx);
+    Mx = eye(Ngx,Ngx)-rx.*A;
+    dMx = decomposition(Mx,'LU');
+
+    My = sparse(Ngy, Ngy);
+    My = eye(Ngy,Ngy)-ry.*A;
+    dMy = decomposition(My,'LU');
+    
+    DpxDmx = @(u,I,J) (u(I+1,J)-2*u(I,J)+u(I-1,J))/(dx^2);
+    DpyDmy = @(u,I,J) (u(I,J+1)-2*u(I,J)+u(I,J-1))/(dy^2);
+
+    % allocate space for solution
+    unp1 = zeros(Ngx,Ngy);
+    vnp1 = zeros(Ngx,Ngy);
+    rhs = zeros(Ngx,Ngy);
+    unm1 = u0(x,y);
+    un = dt*u1(x,y) + unm1;
+
+    %% Start the time-stepping
+    t = 0;
+
+    for n = 2:Nt
+
+        t = n*dt; %new time
+
+        %STEP 1. discretize in x
+        %rhs
+        fn = f(x(I1,J2),y(I1,J2),t); 
+        fnm1 = f(x(I1,I2),y(I1,I2),t-dt);
+        
+        un(J1,I2) = un(J1,I2) + (.5*c*dt^2)*DpyDmy(un,J1,I2); 
+        un(I1,I2) = un(I1,I2) + (.5*c*dt^2)*DpxDmx(un,I1,I2) +(.5*dt^2)*fn;
+
+        %set boundary conditions on left and right
+        un(iax,I2) = gax(y(iax,I2),t) - ry .* (gax(y(iax,I2+1),t) - 2 .* gax(y(iax,I2),t) + gax(y(iax,I2-1),t));
+        un(ibx,I2) = gbx(y(ibx,I2),t) - ry .* (gbx(y(ibx,I2+1),t) - 2 .* gbx(y(ibx,I2),t) + gbx(y(ibx,I2-1),t));
+        %solve
+        un(J1, I2) = dMx\un(J1,I2);
+
+
+        %STEP 2. discretize in y
+        %rhs
+        vnp1(J1,iay)= gay(x(J1,iay),t);
+        vnp1(J1,iby)= gby(x(J1,iby),t);
+
+        unp1(I1, J2) = (dMy\vnp1(I1,J2)')';
+
+        unp1(iax,J2) = gax(y(iax,J2),t);
+        unp1(ibx,J2) = gbx(y(ibx,J2),t);
+
+        unm1 = un; 
+        un = unp1;
+
+    end
+
+    uexact = ue(x,y,t);
+    err(m) = max(max(abs(uexact - un)));
+
+     fprintf('%s: t = %1.2f, Nx = %3d, Nt = %3d, dt = %1.2e, Max-err = %1.3e', ms, t, Nx, Nt, dt, err(m));
+    if(m>1)
+        rate = log(err(m-1)/err(m))/log(2);
+        fprintf(' rate = %1.2f\n', rate);
+    else
+        fprintf('\n');
+    end
+
+    if(plotOption == 1)
+        figure(1)
+        surf(x,y,un); colorbar;
+        title(sprintf('2D Heat Equation %s t=%9.3e (Nx=%d)', ms, t, Nx))
+        xlabel('x'); ylabel('y'); zlabel('u');set(gca, 'FontSize', fontSize); grid on;
+
+        figure(2)
+        surf(x,y,uexact - un); colorbar;
+        title(sprintf('2D Heat Equation Error %s t=%9.3e (Nx=%d)', ms, t, Nx))
+        xlabel('x'); ylabel('y'); zlabel('u');set(gca, 'FontSize', fontSize); grid on;
+    end
+end
